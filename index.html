@@ -9,9 +9,26 @@
   <meta name="apple-mobile-web-app-title" content="SMFA"/>
   <meta name="description" content="Suhum Municipal Football Association – League Management System 2025/26"/>
   <title>SMFA – Suhum Municipal Football Association</title>
-  <link rel="manifest" href="./manifest.json"/>
-  <link rel="apple-touch-icon" href="./icon-192.png"/>
-  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png"/>
+  <script>
+    // Inline manifest so the app works without any external files
+    const manifest = {
+      name: "SMFA League System",
+      short_name: "SMFA",
+      description: "Suhum Municipal Football Association – League Management System",
+      start_url: "./",
+      display: "standalone",
+      background_color: "#080f0a",
+      theme_color: "#22c55e",
+      icons: [
+        { src: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='32' fill='%23080f0a'/><text y='130' x='96' text-anchor='middle' font-size='120'>⚽</text></svg>", sizes: "192x192", type: "image/svg+xml" }
+      ]
+    };
+    const mBlob = new Blob([JSON.stringify(manifest)], {type:"application/json"});
+    const mUrl  = URL.createObjectURL(mBlob);
+    const mLink = document.createElement("link");
+    mLink.rel = "manifest"; mLink.href = mUrl;
+    document.head.appendChild(mLink);
+  </script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; background: #080f0a; }
@@ -52,8 +69,27 @@
     const { useState, useRef, useEffect } = React;
 
 
-// ─── STORAGE ──────────────────────────────────────────────────────
-const STORAGE_KEY = "smfa_v5";
+// ─── STORAGE & SYNC ───────────────────────────────────────────────
+const STORAGE_KEY   = "smfa_v5";
+const SYNC_META_KEY = "smfa_v5_meta";   // {version, updatedAt, deviceId}
+const SYNC_QUEUE_KEY= "smfa_v5_queue";  // offline change queue
+const DEVICE_ID     = (() => { let d=localStorage.getItem("smfa_device"); if(!d){d=Math.random().toString(36).slice(2,10);localStorage.setItem("smfa_device",d);} return d; })();
+
+// BroadcastChannel — zero-latency same-device cross-tab sync
+const BC = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("smfa_sync") : null;
+
+function getMeta() {
+  try { return JSON.parse(localStorage.getItem(SYNC_META_KEY)||"{}"); } catch { return {}; }
+}
+function setMeta(m) {
+  try { localStorage.setItem(SYNC_META_KEY, JSON.stringify(m)); } catch {}
+}
+function getQueue() {
+  try { return JSON.parse(localStorage.getItem(SYNC_QUEUE_KEY)||"[]"); } catch { return []; }
+}
+function setQueue(q) {
+  try { localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(q)); } catch {}
+}
 
 const DEFAULT_DATA = {
   adminPassword: "0000",
@@ -202,8 +238,36 @@ function loadData() {
   } catch {}
   return DEFAULT_DATA;
 }
+
 function saveData(d) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } catch {}
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
+    const meta = { version: Date.now(), updatedAt: new Date().toISOString(), deviceId: DEVICE_ID };
+    setMeta(meta);
+    if (BC) { try { BC.postMessage({ type: "DATA_UPDATE", meta, data: d }); } catch {} }
+    if (!navigator.onLine) enqueueChange(d);
+    else flushQueue();
+  } catch {}
+}
+
+function enqueueChange(data) {
+  const q = getQueue();
+  q.push({ ts: Date.now(), data });
+  if (q.length > 20) q.splice(0, q.length - 20);
+  setQueue(q);
+}
+
+function flushQueue() {
+  const q = getQueue();
+  if (!q.length) return;
+  const latest = q[q.length - 1];
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(latest.data));
+    const meta = { version: Date.now(), updatedAt: new Date().toISOString(), deviceId: DEVICE_ID };
+    setMeta(meta);
+    if (BC) { try { BC.postMessage({ type: "DATA_UPDATE", meta, data: latest.data }); } catch {} }
+  } catch {}
+  setQueue([]);
 }
 
 // ─── FORMATIONS ──────────────────────────────────────────────────
@@ -292,8 +356,103 @@ function App() {
   const [luForm,   setLuForm]   = useState("4-3-3");
   const [lineup,   setLineup]   = useState({});
 
-  // ── Persist
-  useEffect(() => { saveData({adminPassword:adminPw,assocName,assocSeason,assocLogo,teams,stats,players,matches,scorers}); }, [adminPw,assocName,assocSeason,assocLogo,teams,stats,players,matches,scorers]);
+  // ── Sync state
+  const [syncStatus,    setSyncStatus]    = useState("saved");   // "saved"|"syncing"|"offline"|"updated"
+  const [syncTime,      setSyncTime]      = useState("");
+  const [isOnline,      setIsOnline]      = useState(navigator.onLine);
+  const [pendingCount,  setPendingCount]  = useState(getQueue().length);
+  const lastVersionRef  = useRef(getMeta().version || 0);
+
+  // ── Apply incoming data snapshot (from BC or storage event)
+  const applyRemoteData = useRef(null);
+  applyRemoteData.current = (d) => {
+    if (d.adminPassword !== undefined) setAdminPw(d.adminPassword);
+    if (d.assocName     !== undefined) setAssocName(d.assocName);
+    if (d.assocSeason   !== undefined) setAssocSeason(d.assocSeason);
+    if (d.assocLogo     !== undefined) setAssocLogo(d.assocLogo);
+    if (d.teams         !== undefined) setTeams(d.teams);
+    if (d.stats         !== undefined) setStats(d.stats);
+    if (d.players       !== undefined) setPlayers(d.players);
+    if (d.matches       !== undefined) setMatches(d.matches);
+    if (d.scorers       !== undefined) setScorers(d.scorers);
+    setSyncStatus("updated");
+    setSyncTime(new Date().toLocaleTimeString());
+    setTimeout(() => setSyncStatus(navigator.onLine ? "saved" : "offline"), 2500);
+  };
+
+  // ── BroadcastChannel listener — other tabs update this one instantly
+  useEffect(() => {
+    if (!BC) return;
+    const handler = (e) => {
+      if (e.data?.type === "DATA_UPDATE") {
+        const incomingVersion = e.data.meta?.version || 0;
+        if (incomingVersion > lastVersionRef.current) {
+          lastVersionRef.current = incomingVersion;
+          applyRemoteData.current(e.data.data);
+        }
+      }
+    };
+    BC.addEventListener("message", handler);
+    return () => BC.removeEventListener("message", handler);
+  }, []);
+
+  // ── storage event listener — cross-tab fallback + external changes
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === STORAGE_KEY && e.newValue) {
+        const meta = getMeta();
+        const incomingVersion = meta.version || 0;
+        if (incomingVersion > lastVersionRef.current) {
+          lastVersionRef.current = incomingVersion;
+          try {
+            const d = JSON.parse(e.newValue);
+            applyRemoteData.current(d);
+          } catch {}
+        }
+      }
+    };
+    window.addEventListener("storage", handler);
+    return () => window.removeEventListener("storage", handler);
+  }, []);
+
+  // ── Polling — check for updates every 3 seconds (catches external file edits)
+  useEffect(() => {
+    const poll = setInterval(() => {
+      try {
+        const meta = getMeta();
+        const v = meta.version || 0;
+        if (v > lastVersionRef.current) {
+          lastVersionRef.current = v;
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (raw) {
+            const d = JSON.parse(raw);
+            applyRemoteData.current(d);
+          }
+        }
+      } catch {}
+    }, 3000);
+    return () => clearInterval(poll);
+  }, []);
+
+  // ── Online/offline tracking
+  useEffect(() => {
+    const goOnline  = () => { setIsOnline(true); setSyncStatus("syncing"); flushQueue(); setPendingCount(0); setTimeout(()=>setSyncStatus("saved"),1200); };
+    const goOffline = () => { setIsOnline(false); setSyncStatus("offline"); };
+    window.addEventListener("online",  goOnline);
+    window.addEventListener("offline", goOffline);
+    setSyncStatus(navigator.onLine ? "saved" : "offline");
+    return () => { window.removeEventListener("online", goOnline); window.removeEventListener("offline", goOffline); };
+  }, []);
+
+  // ── Persist — save every time data changes, update pending queue count
+  useEffect(() => {
+    const d = {adminPassword:adminPw,assocName,assocSeason,assocLogo,teams,stats,players,matches,scorers};
+    lastVersionRef.current = Date.now();
+    saveData(d);
+    if (!navigator.onLine) setPendingCount(getQueue().length);
+    setSyncStatus(navigator.onLine ? "saved" : "offline");
+    setSyncTime(new Date().toLocaleTimeString());
+  }, [adminPw,assocName,assocSeason,assocLogo,teams,stats,players,matches,scorers]);
 
   const toast = (msg, type="ok") => { setNotify({msg,type}); setTimeout(()=>setNotify(null),3000); };
 
@@ -517,6 +676,25 @@ function App() {
             <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:18,color:C.green,letterSpacing:2,lineHeight:1.1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{assocName}</div>
             <div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>Season {assocSeason} · League Management System</div>
           </div>
+          {/* ── SYNC STATUS INDICATOR ── */}
+          {(() => {
+            const cfg = {
+              saved:   { bg:"#052e16", border:"#22c55e44", dot:"#22c55e", label:"SAVED",    icon:"✅" },
+              syncing: { bg:"#1a1a00", border:"#eab31544", dot:"#eab315", label:"SYNCING…", icon:"🔄" },
+              offline: { bg:"#1a0000", border:"#ef444444", dot:"#ef4444", label:"OFFLINE",  icon:"📴" },
+              updated: { bg:"#001a1a", border:"#3b82f644", dot:"#3b82f6", label:"UPDATED",  icon:"🔵" },
+            }[syncStatus] || {};
+            return (
+              <div style={{flexShrink:0,display:"flex",flexDirection:"column",alignItems:"center",gap:2,cursor:"default"}} title={`Last sync: ${syncTime}`}>
+                <div style={{background:cfg.bg,border:`1px solid ${cfg.border}`,borderRadius:8,padding:"4px 10px",display:"flex",alignItems:"center",gap:6,minWidth:100}}>
+                  <div style={{width:7,height:7,borderRadius:"50%",background:cfg.dot,flexShrink:0,boxShadow:`0 0 8px ${cfg.dot}88`,animation:syncStatus==="syncing"?"spin 1s linear infinite":"none"}}/>
+                  <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:11,letterSpacing:1.5,color:cfg.dot}}>{cfg.label}</span>
+                  {!isOnline && pendingCount > 0 && <span style={{background:"#ef444422",color:"#ef4444",borderRadius:6,fontSize:9,padding:"1px 5px",marginLeft:2}}>{pendingCount}</span>}
+                </div>
+                {syncTime && <div style={{fontSize:8,color:C.muted,letterSpacing:.5}}>{syncTime}</div>}
+              </div>
+            );
+          })()}
           <nav style={{display:"flex",gap:3,marginLeft:"auto",flexWrap:"wrap",alignItems:"center"}}>
             {[
               {k:"table",    l:"🏆 Table"},
@@ -1587,14 +1765,72 @@ function App() {
     if (loader) { loader.style.opacity = "0"; setTimeout(() => loader.remove(), 450); }
   </script>
 
-  <!-- PWA service worker registration -->
+  <!-- PWA service worker — self-contained inline, no external sw.js needed -->
   <script>
     if ("serviceWorker" in navigator) {
-      window.addEventListener("load", () => {
-        navigator.serviceWorker.register("./sw.js")
-          .then(r => console.log("SW registered:", r.scope))
-          .catch(e => console.log("SW error:", e));
-      });
+      // Build an inline service worker that caches the app shell and auto-updates
+      const CACHE_NAME = "smfa-cache-v2";
+      const swCode = `
+        const CACHE = "${CACHE_NAME}";
+        // Install: cache this page
+        self.addEventListener('install', e => {
+          self.skipWaiting();
+          e.waitUntil(
+            caches.open(CACHE).then(c => c.addAll([self.registration.scope]))
+          );
+        });
+        // Activate: clean old caches
+        self.addEventListener('activate', e => {
+          e.waitUntil(
+            caches.keys().then(keys =>
+              Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
+            ).then(() => self.clients.claim())
+          );
+        });
+        // Fetch: network-first, fall back to cache for offline
+        self.addEventListener('fetch', e => {
+          if (e.request.method !== 'GET') return;
+          e.respondWith(
+            fetch(e.request)
+              .then(resp => {
+                // Cache the fresh copy
+                const clone = resp.clone();
+                caches.open(CACHE).then(c => c.put(e.request, clone));
+                return resp;
+              })
+              .catch(() => caches.match(e.request))
+          );
+        });
+        // Message: force refresh from network
+        self.addEventListener('message', e => {
+          if (e.data === 'SKIP_WAITING') self.skipWaiting();
+        });
+      `;
+      const blob = new Blob([swCode], { type: "application/javascript" });
+      const swUrl = URL.createObjectURL(blob);
+
+      navigator.serviceWorker.register(swUrl).then(reg => {
+        // Check for updates on load and periodically
+        reg.update();
+        setInterval(() => reg.update(), 60000);
+
+        reg.addEventListener('updatefound', () => {
+          const nw = reg.installing;
+          if (!nw) return;
+          nw.addEventListener('statechange', () => {
+            if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+              // New content available — auto-activate
+              nw.postMessage('SKIP_WAITING');
+            }
+          });
+        });
+
+        // When SW takes control, reload to get fresh cache
+        let refreshing = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          if (!refreshing) { refreshing = true; window.location.reload(); }
+        });
+      }).catch(e => console.warn("SW register error:", e));
     }
 
     // Install prompt (Android/Chrome)
