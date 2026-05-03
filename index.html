@@ -9,26 +9,9 @@
   <meta name="apple-mobile-web-app-title" content="SMFA"/>
   <meta name="description" content="Suhum Municipal Football Association – League Management System 2025/26"/>
   <title>SMFA – Suhum Municipal Football Association</title>
-  <script>
-    // Inline manifest so the app works without any external files
-    const manifest = {
-      name: "SMFA League System",
-      short_name: "SMFA",
-      description: "Suhum Municipal Football Association – League Management System",
-      start_url: "./",
-      display: "standalone",
-      background_color: "#080f0a",
-      theme_color: "#22c55e",
-      icons: [
-        { src: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='32' fill='%23080f0a'/><text y='130' x='96' text-anchor='middle' font-size='120'>⚽</text></svg>", sizes: "192x192", type: "image/svg+xml" }
-      ]
-    };
-    const mBlob = new Blob([JSON.stringify(manifest)], {type:"application/json"});
-    const mUrl  = URL.createObjectURL(mBlob);
-    const mLink = document.createElement("link");
-    mLink.rel = "manifest"; mLink.href = mUrl;
-    document.head.appendChild(mLink);
-  </script>
+  <link rel="manifest" href="./manifest.json"/>
+  <link rel="apple-touch-icon" href="./icon-192.png"/>
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png"/>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; background: #080f0a; }
@@ -69,26 +52,57 @@
     const { useState, useRef, useEffect } = React;
 
 
-// ─── STORAGE & SYNC ───────────────────────────────────────────────
-const STORAGE_KEY   = "smfa_v5";
-const SYNC_META_KEY = "smfa_v5_meta";   // {version, updatedAt, deviceId}
-const SYNC_QUEUE_KEY= "smfa_v5_queue";  // offline change queue
-const DEVICE_ID     = (() => { let d=localStorage.getItem("smfa_device"); if(!d){d=Math.random().toString(36).slice(2,10);localStorage.setItem("smfa_device",d);} return d; })();
+// ─── STORAGE ──────────────────────────────────────────────────────
+const STORAGE_KEY = "smfa_v5";
 
-// BroadcastChannel — zero-latency same-device cross-tab sync
-const BC = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("smfa_sync") : null;
+// ─── CLOUD SYNC ───────────────────────────────────────────────────
+// Uses JSONbin.io (free, no signup for public bins)
+// SETUP: Admin must run "Setup Cloud Sync" once from the Share panel
+// After setup, all shared links auto-update whenever admin makes changes
+const CLOUD_KEY_STORAGE = "smfa_cloud_bin_id";
+const SFA_PUBLIC_KEY = "suhum";
 
-function getMeta() {
-  try { return JSON.parse(localStorage.getItem(SYNC_META_KEY)||"{}"); } catch { return {}; }
+function getCloudBinId() {
+  try { return localStorage.getItem(CLOUD_KEY_STORAGE) || null; } catch { return null; }
 }
-function setMeta(m) {
-  try { localStorage.setItem(SYNC_META_KEY, JSON.stringify(m)); } catch {}
+function saveCloudBinId(id) {
+  try { localStorage.setItem(CLOUD_KEY_STORAGE, id); } catch {}
 }
-function getQueue() {
-  try { return JSON.parse(localStorage.getItem(SYNC_QUEUE_KEY)||"[]"); } catch { return []; }
+
+async function cloudCreate(data) {
+  // Create a new public bin on JSONbin.io (no auth required for public bins)
+  try {
+    const res = await fetch("https://api.jsonbin.io/v3/b", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Bin-Name": "SMFA-Suhum-League" },
+      body: JSON.stringify({ ...data, _updated: Date.now() })
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    return j.metadata?.id || null;
+  } catch { return null; }
 }
-function setQueue(q) {
-  try { localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(q)); } catch {}
+
+async function cloudPush(binId, data) {
+  if (!binId) return false;
+  try {
+    const res = await fetch(`https://api.jsonbin.io/v3/b/${binId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...data, _updated: Date.now() })
+    });
+    return res.ok;
+  } catch { return false; }
+}
+
+async function cloudPull(binId) {
+  if (!binId) return null;
+  try {
+    const res = await fetch(`https://api.jsonbin.io/v3/b/${binId}/latest`);
+    if (!res.ok) return null;
+    const j = await res.json();
+    return j.record || null;
+  } catch { return null; }
 }
 
 const DEFAULT_DATA = {
@@ -238,36 +252,8 @@ function loadData() {
   } catch {}
   return DEFAULT_DATA;
 }
-
 function saveData(d) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
-    const meta = { version: Date.now(), updatedAt: new Date().toISOString(), deviceId: DEVICE_ID };
-    setMeta(meta);
-    if (BC) { try { BC.postMessage({ type: "DATA_UPDATE", meta, data: d }); } catch {} }
-    if (!navigator.onLine) enqueueChange(d);
-    else flushQueue();
-  } catch {}
-}
-
-function enqueueChange(data) {
-  const q = getQueue();
-  q.push({ ts: Date.now(), data });
-  if (q.length > 20) q.splice(0, q.length - 20);
-  setQueue(q);
-}
-
-function flushQueue() {
-  const q = getQueue();
-  if (!q.length) return;
-  const latest = q[q.length - 1];
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(latest.data));
-    const meta = { version: Date.now(), updatedAt: new Date().toISOString(), deviceId: DEVICE_ID };
-    setMeta(meta);
-    if (BC) { try { BC.postMessage({ type: "DATA_UPDATE", meta, data: latest.data }); } catch {} }
-  } catch {}
-  setQueue([]);
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } catch {}
 }
 
 // ─── FORMATIONS ──────────────────────────────────────────────────
@@ -356,161 +342,94 @@ function App() {
   const [luForm,   setLuForm]   = useState("4-3-3");
   const [lineup,   setLineup]   = useState({});
 
-  // ── Sync state
-  const [syncStatus,    setSyncStatus]    = useState("saved");   // "saved"|"syncing"|"offline"|"updated"
-  const [syncTime,      setSyncTime]      = useState("");
-  const [isOnline,      setIsOnline]      = useState(navigator.onLine);
-  const [pendingCount,  setPendingCount]  = useState(getQueue().length);
-  const lastVersionRef  = useRef(getMeta().version || 0);
-
-  // ── Apply incoming data snapshot (from BC or storage event)
-  const applyRemoteData = useRef(null);
-  applyRemoteData.current = (d) => {
-    if (d.adminPassword !== undefined) setAdminPw(d.adminPassword);
-    if (d.assocName     !== undefined) setAssocName(d.assocName);
-    if (d.assocSeason   !== undefined) setAssocSeason(d.assocSeason);
-    if (d.assocLogo     !== undefined) setAssocLogo(d.assocLogo);
-    if (d.teams         !== undefined) setTeams(d.teams);
-    if (d.stats         !== undefined) setStats(d.stats);
-    if (d.players       !== undefined) setPlayers(d.players);
-    if (d.matches       !== undefined) setMatches(d.matches);
-    if (d.scorers       !== undefined) setScorers(d.scorers);
-    setSyncStatus("updated");
-    setSyncTime(new Date().toLocaleTimeString());
-    setTimeout(() => setSyncStatus(navigator.onLine ? "saved" : "offline"), 2500);
-  };
-
-  // ── BroadcastChannel listener — other tabs update this one instantly
-  useEffect(() => {
-    if (!BC) return;
-    const handler = (e) => {
-      if (e.data?.type === "DATA_UPDATE") {
-        const incomingVersion = e.data.meta?.version || 0;
-        if (incomingVersion > lastVersionRef.current) {
-          lastVersionRef.current = incomingVersion;
-          applyRemoteData.current(e.data.data);
-        }
-      }
-    };
-    BC.addEventListener("message", handler);
-    return () => BC.removeEventListener("message", handler);
-  }, []);
-
-  // ── storage event listener — cross-tab fallback + external changes
-  useEffect(() => {
-    const handler = (e) => {
-      if (e.key === STORAGE_KEY && e.newValue) {
-        const meta = getMeta();
-        const incomingVersion = meta.version || 0;
-        if (incomingVersion > lastVersionRef.current) {
-          lastVersionRef.current = incomingVersion;
-          try {
-            const d = JSON.parse(e.newValue);
-            applyRemoteData.current(d);
-          } catch {}
-        }
-      }
-    };
-    window.addEventListener("storage", handler);
-    return () => window.removeEventListener("storage", handler);
-  }, []);
-
-  // ── Polling — check for updates every 3 seconds (catches external file edits)
-  useEffect(() => {
-    const poll = setInterval(() => {
-      try {
-        const meta = getMeta();
-        const v = meta.version || 0;
-        if (v > lastVersionRef.current) {
-          lastVersionRef.current = v;
-          const raw = localStorage.getItem(STORAGE_KEY);
-          if (raw) {
-            const d = JSON.parse(raw);
-            applyRemoteData.current(d);
-          }
-        }
-      } catch {}
-    }, 3000);
-    return () => clearInterval(poll);
-  }, []);
-
-  // ── Online/offline tracking
-  useEffect(() => {
-    const goOnline  = () => { setIsOnline(true); setSyncStatus("syncing"); flushQueue(); setPendingCount(0); setTimeout(()=>setSyncStatus("saved"),1200); };
-    const goOffline = () => { setIsOnline(false); setSyncStatus("offline"); };
-    window.addEventListener("online",  goOnline);
-    window.addEventListener("offline", goOffline);
-    setSyncStatus(navigator.onLine ? "saved" : "offline");
-    return () => { window.removeEventListener("online", goOnline); window.removeEventListener("offline", goOffline); };
-  }, []);
-
-  // ── Persist — save every time data changes, update pending queue count
-  useEffect(() => {
-    const d = {adminPassword:adminPw,assocName,assocSeason,assocLogo,teams,stats,players,matches,scorers};
-    lastVersionRef.current = Date.now();
-    saveData(d);
-    if (!navigator.onLine) setPendingCount(getQueue().length);
-    setSyncStatus(navigator.onLine ? "saved" : "offline");
-    setSyncTime(new Date().toLocaleTimeString());
-  }, [adminPw,assocName,assocSeason,assocLogo,teams,stats,players,matches,scorers]);
+  // ── Persist
+  useEffect(() => { saveData({adminPassword:adminPw,assocName,assocSeason,assocLogo,teams,stats,players,matches,scorers}); }, [adminPw,assocName,assocSeason,assocLogo,teams,stats,players,matches,scorers]);
 
   const toast = (msg, type="ok") => { setNotify({msg,type}); setTimeout(()=>setNotify(null),3000); };
 
-  // ── Viewer mode — cross-device URL encoding (works on GitHub Pages, any host)
-  // Data is encoded directly in the URL hash so ANY device can open it — no server needed.
-  // We strip logos/photos from shared data to keep the URL short enough for social media.
-  const hashVal = typeof window !== "undefined" ? window.location.hash : "";
-  const isViewer = hashVal.startsWith("#v=");
+  // ── Viewer mode — permanent public link OR legacy share key
+  const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+  const viewKey   = urlParams ? (urlParams.get("view") || urlParams.get("share")) : null;
+  const isViewer  = !!viewKey;
+  const [cloudStatus, setCloudStatus] = useState("idle"); // idle | syncing | synced | error | needs_setup
+  const [cloudBinId, setCloudBinId]   = useState(() => getCloudBinId());
+  const [modalCloudSetup, setModalCloudSetup] = useState(false);
+  const [cloudSetupStep,  setCloudSetupStep]  = useState("idle"); // idle | creating | done | fail
 
+  // Viewer: load from cloud on open
   useEffect(() => {
-    if (!isViewer) return;
-    try {
-      const encoded = hashVal.slice(3);
-      const json = decodeURIComponent(escape(atob(encoded)));
-      const d = JSON.parse(json);
+    if (!isViewer || !viewKey) return;
+    // viewKey contains the binId encoded in the URL
+    const binId = viewKey.startsWith("suhum_") ? viewKey.replace("suhum_","") : viewKey;
+    setCloudStatus("syncing");
+    cloudPull(binId).then(d => {
+      if (!d) { setCloudStatus("error"); return; }
       if (d.assocName)   setAssocName(d.assocName);
       if (d.assocSeason) setAssocSeason(d.assocSeason);
+      if (d.assocLogo)   setAssocLogo(d.assocLogo);
       if (d.teams)   setTeams(d.teams);
       if (d.stats)   setStats(d.stats);
       if (d.players) setPlayers(d.players);
       if (d.matches) setMatches(d.matches);
       if (d.scorers) setScorers(d.scorers);
-    } catch(e) { console.warn("Share decode error", e); }
+      setCloudStatus("synced");
+    });
   }, []);
 
-  // Strip photos/logos so URL stays short (~2-4KB base64)
-  const stripMedia = (obj) => {
-    if (!obj) return obj;
-    if (Array.isArray(obj)) return obj.map(stripMedia);
-    if (typeof obj === "object") {
-      const out = {};
-      for (const k in obj) out[k] = (k==="photo"||k==="logo") ? null : stripMedia(obj[k]);
-      return out;
-    }
-    return obj;
+  // Viewer: auto-refresh every 30s
+  useEffect(() => {
+    if (!isViewer || !viewKey) return;
+    const binId = viewKey.startsWith("suhum_") ? viewKey.replace("suhum_","") : viewKey;
+    const interval = setInterval(() => {
+      cloudPull(binId).then(d => {
+        if (!d) return;
+        if (d.teams)   setTeams(d.teams);
+        if (d.stats)   setStats(d.stats);
+        if (d.matches) setMatches(d.matches);
+        if (d.scorers) setScorers(d.scorers);
+        if (d.assocName) setAssocName(d.assocName);
+        if (d.assocSeason) setAssocSeason(d.assocSeason);
+        setCloudStatus("synced");
+      });
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [isViewer, viewKey]);
+
+  // Admin: auto-push to cloud on any data change (debounced)
+  useEffect(() => {
+    if (!isAdmin || isViewer || !cloudBinId) return;
+    setCloudStatus("syncing");
+    const t = setTimeout(() => {
+      cloudPush(cloudBinId, {assocName,assocSeason,assocLogo,teams,stats,players,matches,scorers})
+        .then(ok => setCloudStatus(ok ? "synced" : "error"));
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [adminPw,assocName,assocSeason,assocLogo,teams,stats,players,matches,scorers,isAdmin,cloudBinId]);
+
+  const getPublicLink = () => {
+    if (!cloudBinId) return null;
+    const base = window.location.href.split("?")[0].split("#")[0];
+    return base + "?view=suhum_" + cloudBinId;
   };
 
-  const generateShareLink = () => {
-    try {
-      const payload = {
-        assocName, assocSeason,
-        teams:   stripMedia(teams),
-        stats,
-        players: stripMedia(players),
-        matches,
-        scorers
-      };
-      const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
-      const base = window.location.href.split("#")[0].split("?")[0];
-      return base + "#v=" + encoded;
-    } catch(e) {
-      return window.location.href;
+  const doCloudSetup = async () => {
+    setCloudSetupStep("creating");
+    const data = {assocName,assocSeason,assocLogo,teams,stats,players,matches,scorers};
+    const id = await cloudCreate(data);
+    if (id) {
+      saveCloudBinId(id);
+      setCloudBinId(id);
+      setCloudStatus("synced");
+      setCloudSetupStep("done");
+    } else {
+      setCloudSetupStep("fail");
     }
   };
 
   const doShare = () => {
-    const link = generateShareLink();
-    const msg = "⚽ " + assocName + " – " + assocSeason + " League Table";
+    const link = getPublicLink();
+    if (!link) { setModalCloudSetup(true); return; }
+    const msg = "⚽ Live league table – " + assocName + " " + assocSeason;
     if (navigator.share) {
       navigator.share({title: assocName + " League", text: msg, url: link}).catch(()=>{});
     } else {
@@ -518,7 +437,8 @@ function App() {
     }
   };
   const copyLink = () => {
-    const link = generateShareLink();
+    const link = getPublicLink();
+    if (!link) { setModalCloudSetup(true); return; }
     navigator.clipboard.writeText(link).then(()=>{setCopyOk(true);setTimeout(()=>setCopyOk(false),3000);});
   };
 
@@ -659,8 +579,21 @@ function App() {
       `}</style>
 
       {/* VIEWER BANNER */}
-      {isViewer && <div style={{background:"#052e16",borderBottom:`1px solid ${C.green}44`,padding:"6px 20px",textAlign:"center",fontSize:11,color:C.green,fontFamily:"'Bebas Neue',sans-serif",letterSpacing:2}}>👁 VIEW-ONLY MODE — Shared snapshot of {assocName}</div>}
-      {isAdmin  && !isViewer && <div style={{background:"#0f2d17",borderBottom:`1px solid ${C.greenDim}`,padding:"5px 20px",textAlign:"center",fontSize:11,color:"#86efac",fontFamily:"'Bebas Neue',sans-serif",letterSpacing:2}}>🔐 ADMIN MODE — Changes save automatically</div>}
+      {isViewer && <div style={{background:"#052e16",borderBottom:`1px solid ${C.green}44`,padding:"6px 20px",textAlign:"center",fontSize:11,color:C.green,fontFamily:"'Bebas Neue',sans-serif",letterSpacing:2,display:"flex",alignItems:"center",justifyContent:"center",gap:10,flexWrap:"wrap"}}>
+        👁 LIVE VIEW — {assocName}
+        {cloudStatus==="syncing" && <span style={{color:C.accent}}>⏳ Loading…</span>}
+        {cloudStatus==="synced"  && <span style={{color:"#4ade80"}}>🟢 Live & Up to Date</span>}
+        {cloudStatus==="error"   && <span style={{color:"#f87171"}}>⚠️ Offline – showing cached data</span>}
+        <button onClick={()=>{ const binId=viewKey.startsWith("suhum_")?viewKey.replace("suhum_",""):viewKey; setCloudStatus("syncing"); cloudPull(binId).then(d=>{ if(d){ if(d.teams)setTeams(d.teams); if(d.stats)setStats(d.stats); if(d.matches)setMatches(d.matches); if(d.scorers)setScorers(d.scorers); setCloudStatus("synced"); } }); }} style={{background:"transparent",border:`1px solid ${C.green}44`,borderRadius:5,color:C.green,fontSize:10,padding:"2px 8px",cursor:"pointer",fontFamily:"'Bebas Neue',sans-serif",letterSpacing:1}}>🔄 REFRESH</button>
+      </div>}
+      {isAdmin && !isViewer && <div style={{background:"#0f2d17",borderBottom:`1px solid ${C.greenDim}`,padding:"5px 20px",textAlign:"center",fontSize:11,color:"#86efac",fontFamily:"'Bebas Neue',sans-serif",letterSpacing:2,display:"flex",alignItems:"center",justifyContent:"center",gap:10,flexWrap:"wrap"}}>
+        🔐 ADMIN MODE
+        {!cloudBinId && <><span style={{color:"#fb923c"}}>⚠️ Cloud sync not set up —</span><button onClick={()=>setModalCloudSetup(true)} style={{background:"linear-gradient(135deg,#d97706,#92400e)",border:"none",borderRadius:5,color:"#fff",fontSize:10,padding:"2px 10px",cursor:"pointer",fontFamily:"'Bebas Neue',sans-serif",letterSpacing:1}}>ACTIVATE NOW</button></>}
+        {cloudBinId && cloudStatus==="syncing" && <span style={{color:C.accent}}>⏳ Syncing to cloud…</span>}
+        {cloudBinId && cloudStatus==="synced"  && <span style={{color:"#4ade80"}}>☁️ Cloud synced — all shared links updated</span>}
+        {cloudBinId && cloudStatus==="error"   && <span style={{color:"#f87171"}}>⚠️ Cloud sync failed — saved locally only</span>}
+        {cloudBinId && cloudStatus==="idle"    && <span style={{color:C.muted}}>Changes save automatically</span>}
+      </div>}
 
       {/* HEADER */}
       <header style={css.hdr}>
@@ -676,25 +609,6 @@ function App() {
             <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:18,color:C.green,letterSpacing:2,lineHeight:1.1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{assocName}</div>
             <div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>Season {assocSeason} · League Management System</div>
           </div>
-          {/* ── SYNC STATUS INDICATOR ── */}
-          {(() => {
-            const cfg = {
-              saved:   { bg:"#052e16", border:"#22c55e44", dot:"#22c55e", label:"SAVED",    icon:"✅" },
-              syncing: { bg:"#1a1a00", border:"#eab31544", dot:"#eab315", label:"SYNCING…", icon:"🔄" },
-              offline: { bg:"#1a0000", border:"#ef444444", dot:"#ef4444", label:"OFFLINE",  icon:"📴" },
-              updated: { bg:"#001a1a", border:"#3b82f644", dot:"#3b82f6", label:"UPDATED",  icon:"🔵" },
-            }[syncStatus] || {};
-            return (
-              <div style={{flexShrink:0,display:"flex",flexDirection:"column",alignItems:"center",gap:2,cursor:"default"}} title={`Last sync: ${syncTime}`}>
-                <div style={{background:cfg.bg,border:`1px solid ${cfg.border}`,borderRadius:8,padding:"4px 10px",display:"flex",alignItems:"center",gap:6,minWidth:100}}>
-                  <div style={{width:7,height:7,borderRadius:"50%",background:cfg.dot,flexShrink:0,boxShadow:`0 0 8px ${cfg.dot}88`,animation:syncStatus==="syncing"?"spin 1s linear infinite":"none"}}/>
-                  <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:11,letterSpacing:1.5,color:cfg.dot}}>{cfg.label}</span>
-                  {!isOnline && pendingCount > 0 && <span style={{background:"#ef444422",color:"#ef4444",borderRadius:6,fontSize:9,padding:"1px 5px",marginLeft:2}}>{pendingCount}</span>}
-                </div>
-                {syncTime && <div style={{fontSize:8,color:C.muted,letterSpacing:.5}}>{syncTime}</div>}
-              </div>
-            );
-          })()}
           <nav style={{display:"flex",gap:3,marginLeft:"auto",flexWrap:"wrap",alignItems:"center"}}>
             {[
               {k:"table",    l:"🏆 Table"},
@@ -1482,39 +1396,75 @@ function App() {
       {modalShare && (
         <div style={css.modal} onClick={e=>e.target===e.currentTarget&&setModalShare(false)}>
           <div style={css.mbox}>
-            <div style={{textAlign:"center",marginBottom:20}}>
+            <div style={{textAlign:"center",marginBottom:16}}>
               <div style={{fontSize:44,marginBottom:8}}>🔗</div>
               <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:22,color:C.green,letterSpacing:2}}>Share League</div>
-              <div style={{fontSize:12,color:C.muted,marginTop:4}}>Anyone with this link can <strong style={{color:C.text}}>view</strong> the league — read only</div>
+              <div style={{fontSize:12,color:C.muted,marginTop:4}}>
+                {cloudBinId ? <>Anyone with this link sees <strong style={{color:C.text}}>live, always-updated</strong> data</> : "Set up cloud sync to share a permanent live link"}
+              </div>
             </div>
 
-            {/* Big share button — native share sheet on mobile */}
-            <button className="hov" style={{...btn(),width:"100%",fontSize:15,padding:"13px 18px",marginBottom:8,display:"flex",alignItems:"center",justifyContent:"center",gap:10}} onClick={doShare}>
-              <span style={{fontSize:18}}>📤</span> {typeof navigator!=="undefined"&&navigator.share?"Share via App…":"Copy Short Link"}
-            </button>
-
-            {/* Social share buttons */}
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:7,marginBottom:10}}>
-              {[
-                {icon:"💬",label:"WhatsApp",  color:"#25D366", fn:()=>{ const l=generateShareLink(); window.open("https://wa.me/?text="+encodeURIComponent("⚽ "+assocName+" – "+assocSeason+" League Table\n"+l),"_blank"); }},
-                {icon:"🐦",label:"Twitter/X", color:"#1DA1F2", fn:()=>{ const l=generateShareLink(); window.open("https://twitter.com/intent/tweet?text="+encodeURIComponent("⚽ Check out "+assocName+" "+assocSeason+" league table!")+"&url="+encodeURIComponent(l),"_blank"); }},
-                {icon:"📘",label:"Facebook",  color:"#1877F2", fn:()=>{ const l=generateShareLink(); window.open("https://www.facebook.com/sharer/sharer.php?u="+encodeURIComponent(l),"_blank"); }},
-              ].map(({icon,label,color,fn})=>(
-                <button key={label} className="hov" style={{background:"transparent",border:`1px solid ${color}55`,borderRadius:8,padding:"9px 6px",cursor:"pointer",color,fontSize:11,fontFamily:"'Bebas Neue',sans-serif",letterSpacing:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4,transition:"all .18s"}} onClick={fn}>
-                  <span style={{fontSize:20}}>{icon}</span>{label}
+            {!cloudBinId ? (
+              /* Cloud not yet set up */
+              <div style={{background:"#1a0a00",border:"1px solid #d9770655",borderRadius:10,padding:"16px",marginBottom:14,textAlign:"center"}}>
+                <div style={{fontSize:32,marginBottom:8}}>☁️</div>
+                <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:16,color:"#fb923c",letterSpacing:1,marginBottom:8}}>Cloud Sync Not Set Up</div>
+                <div style={{fontSize:12,color:C.muted,marginBottom:14,lineHeight:1.7}}>
+                  Activate cloud sync to get a <strong style={{color:C.text}}>single permanent link</strong> for Suhum FA that auto-updates whenever you make changes — online or offline.
+                </div>
+                <button className="hov" style={{...btn(),width:"100%",fontSize:14,padding:"12px"}} onClick={()=>{setModalShare(false);setModalCloudSetup(true);}}>
+                  ☁️ Activate Cloud Sync (Free)
                 </button>
-              ))}
-            </div>
+              </div>
+            ) : (
+              <>
+                {/* Permanent Public Link Box */}
+                <div style={{background:"#052e16",border:`1px solid ${C.green}44`,borderRadius:10,padding:"12px 14px",marginBottom:12}}>
+                  <div style={{fontSize:10,fontFamily:"'Bebas Neue',sans-serif",letterSpacing:2,color:C.green,marginBottom:6}}>🏆 SUHUM FOOTBALL ASSOCIATION — PERMANENT LINK</div>
+                  <div style={{fontSize:11,color:"#86efac",wordBreak:"break-all",fontFamily:"monospace",background:"#0a160c",padding:"8px 10px",borderRadius:6,marginBottom:8,userSelect:"all"}}>
+                    {getPublicLink()}
+                  </div>
+                  <div style={{fontSize:10,color:C.muted}}>✅ This link <strong style={{color:C.green}}>never changes</strong> — share once, always shows latest data</div>
+                </div>
 
-            {/* Copy fallback */}
-            <button className="hov" style={{...btn("g"),width:"100%",fontSize:12,padding:"9px",marginBottom:8,display:"flex",alignItems:"center",justifyContent:"center",gap:7}} onClick={copyLink}>
-              <span>📋</span> Copy Link to Clipboard
-            </button>
-            {copyOk && <div style={{textAlign:"center",color:C.green,fontSize:13,marginBottom:8,fontWeight:600}}>✅ Short link copied!</div>}
+                {/* Cloud sync status */}
+                <div style={{background:"#0a160c",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:11,color:C.muted,display:"flex",alignItems:"center",gap:8}}>
+                  {cloudStatus==="synced"  && <><span style={{color:"#4ade80"}}>🟢</span> Cloud live — all viewers see your latest changes</>}
+                  {cloudStatus==="syncing" && <><span style={{color:C.accent}}>⏳</span> Syncing to cloud…</>}
+                  {cloudStatus==="error"   && <><span style={{color:"#f87171"}}>⚠️</span> Cloud sync failed — try pushing manually</>}
+                  {cloudStatus==="idle"    && <><span>☁️</span> Make a change as admin to push to cloud</>}
+                </div>
 
-            <div style={{fontSize:10,color:C.muted,textAlign:"center",marginBottom:14,lineHeight:1.6}}>
-              Generates a <span style={{color:C.green}}>short shareable link</span> — fans & players see standings, fixtures and stats. Link is stored on this device.
-            </div>
+                {cloudStatus==="error" && (
+                  <button className="hov" style={{...btn(),width:"100%",fontSize:13,padding:"10px",marginBottom:8}} onClick={()=>{ setCloudStatus("syncing"); cloudPush(cloudBinId,{assocName,assocSeason,assocLogo,teams,stats,players,matches,scorers}).then(ok=>setCloudStatus(ok?"synced":"error")); }}>
+                    ☁️ Push to Cloud Now
+                  </button>
+                )}
+
+                {/* Big share button */}
+                <button className="hov" style={{...btn(),width:"100%",fontSize:15,padding:"13px 18px",marginBottom:8,display:"flex",alignItems:"center",justifyContent:"center",gap:10}} onClick={doShare}>
+                  <span style={{fontSize:18}}>📤</span> {typeof navigator!=="undefined"&&navigator.share?"Share via App…":"Copy Link"}
+                </button>
+
+                {/* Social share buttons */}
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:7,marginBottom:10}}>
+                  {[
+                    {icon:"💬",label:"WhatsApp",  color:"#25D366", fn:()=>{ const l=getPublicLink(); window.open("https://wa.me/?text="+encodeURIComponent("⚽ "+assocName+" – "+assocSeason+" Live League\n"+l),"_blank"); }},
+                    {icon:"🐦",label:"Twitter/X", color:"#1DA1F2", fn:()=>{ const l=getPublicLink(); window.open("https://twitter.com/intent/tweet?text="+encodeURIComponent("⚽ "+assocName+" "+assocSeason+" live table!")+"&url="+encodeURIComponent(l),"_blank"); }},
+                    {icon:"📘",label:"Facebook",  color:"#1877F2", fn:()=>{ const l=getPublicLink(); window.open("https://www.facebook.com/sharer/sharer.php?u="+encodeURIComponent(l),"_blank"); }},
+                  ].map(({icon,label,color,fn})=>(
+                    <button key={label} className="hov" style={{background:"transparent",border:`1px solid ${color}55`,borderRadius:8,padding:"9px 6px",cursor:"pointer",color,fontSize:11,fontFamily:"'Bebas Neue',sans-serif",letterSpacing:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4,transition:"all .18s"}} onClick={fn}>
+                      <span style={{fontSize:20}}>{icon}</span>{label}
+                    </button>
+                  ))}
+                </div>
+
+                <button className="hov" style={{...btn("g"),width:"100%",fontSize:12,padding:"9px",marginBottom:8,display:"flex",alignItems:"center",justifyContent:"center",gap:7}} onClick={copyLink}>
+                  <span>📋</span> Copy Link to Clipboard
+                </button>
+                {copyOk && <div style={{textAlign:"center",color:C.green,fontSize:13,marginBottom:8,fontWeight:600}}>✅ Link copied!</div>}
+              </>
+            )}
 
             {isAdmin && (
               <div style={{borderTop:`1px solid ${C.border}`,paddingTop:14,display:"flex",gap:9}}>
@@ -1523,6 +1473,81 @@ function App() {
               </div>
             )}
             {!isAdmin && <button className="hov" style={{...btn("g"),width:"100%"}} onClick={()=>setModalShare(false)}>Close</button>}
+          </div>
+        </div>
+      )}
+
+      {/* CLOUD SETUP MODAL */}
+      {modalCloudSetup && (
+        <div style={css.modal} onClick={e=>e.target===e.currentTarget&&(setModalCloudSetup(false),setCloudSetupStep("idle"))}>
+          <div style={css.mbox}>
+            <div style={{textAlign:"center",marginBottom:20}}>
+              <div style={{fontSize:48,marginBottom:8}}>☁️</div>
+              <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:22,color:C.green,letterSpacing:2}}>Activate Cloud Sync</div>
+              <div style={{fontSize:12,color:C.muted,marginTop:4,lineHeight:1.7}}>Creates a free cloud database for Suhum FA so your shared link always shows the latest data — on any device, anywhere.</div>
+            </div>
+
+            {cloudSetupStep==="idle" && (
+              <>
+                <div style={{background:"#0a160c",borderRadius:10,border:`1px solid ${C.border}`,padding:"14px",marginBottom:16}}>
+                  {[
+                    ["⚡","One-tap setup","No account, no signup, free forever"],
+                    ["🔄","Auto-sync","Every change you make as admin pushes to cloud instantly"],
+                    ["🔗","Permanent link","Share once — link never changes or expires"],
+                    ["📱","Works everywhere","Viewers see live data on any phone, laptop, or tablet"],
+                  ].map(([icon,title,desc])=>(
+                    <div key={title} style={{display:"flex",gap:12,marginBottom:10,alignItems:"flex-start"}}>
+                      <span style={{fontSize:18,flexShrink:0}}>{icon}</span>
+                      <div><div style={{fontSize:12,color:C.text,fontWeight:600}}>{title}</div><div style={{fontSize:11,color:C.muted}}>{desc}</div></div>
+                    </div>
+                  ))}
+                </div>
+                <button className="hov" style={{...btn(),width:"100%",fontSize:15,padding:"14px",marginBottom:8}} onClick={doCloudSetup}>
+                  🚀 Activate Now (Free)
+                </button>
+                <button className="hov" style={{...btn("g"),width:"100%",fontSize:12}} onClick={()=>{setModalCloudSetup(false);setCloudSetupStep("idle");}}>Cancel</button>
+              </>
+            )}
+
+            {cloudSetupStep==="creating" && (
+              <div style={{textAlign:"center",padding:"20px 0"}}>
+                <div style={{fontSize:40,marginBottom:12,animation:"spin 1s linear infinite",display:"inline-block"}}>⏳</div>
+                <div style={{color:C.green,fontFamily:"'Bebas Neue',sans-serif",fontSize:16,letterSpacing:2}}>Creating cloud database…</div>
+                <div style={{color:C.muted,fontSize:12,marginTop:6}}>This takes a few seconds</div>
+              </div>
+            )}
+
+            {cloudSetupStep==="done" && (
+              <div style={{textAlign:"center",padding:"10px 0"}}>
+                <div style={{fontSize:48,marginBottom:12}}>🎉</div>
+                <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:20,color:C.green,letterSpacing:2,marginBottom:8}}>Cloud Sync Active!</div>
+                <div style={{background:"#052e16",border:`1px solid ${C.green}44`,borderRadius:10,padding:"12px",marginBottom:14}}>
+                  <div style={{fontSize:10,fontFamily:"'Bebas Neue',sans-serif",letterSpacing:2,color:C.green,marginBottom:6}}>YOUR PERMANENT LINK</div>
+                  <div style={{fontSize:11,color:"#86efac",wordBreak:"break-all",fontFamily:"monospace",background:"#0a160c",padding:"8px",borderRadius:6,userSelect:"all"}}>
+                    {getPublicLink()}
+                  </div>
+                </div>
+                <div style={{fontSize:11,color:C.muted,marginBottom:16,lineHeight:1.7}}>
+                  Share this link with players, fans, and officials. It will always show the latest league data whenever you update it as admin.
+                </div>
+                <button className="hov" style={{...btn(),width:"100%",fontSize:14,padding:"12px",marginBottom:8}} onClick={()=>{ navigator.clipboard.writeText(getPublicLink()||""); setCopyOk(true); toast("Link copied!"); }}>
+                  📋 Copy Link
+                </button>
+                <button className="hov" style={{...btn("g"),width:"100%",fontSize:12}} onClick={()=>{setModalCloudSetup(false);setCloudSetupStep("idle");}}>Done</button>
+              </div>
+            )}
+
+            {cloudSetupStep==="fail" && (
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:40,marginBottom:10}}>⚠️</div>
+                <div style={{color:"#f87171",fontFamily:"'Bebas Neue',sans-serif",fontSize:16,letterSpacing:2,marginBottom:8}}>Setup Failed</div>
+                <div style={{color:C.muted,fontSize:12,marginBottom:16,lineHeight:1.7}}>Could not connect to cloud. Check your internet connection and try again. The app still works locally.</div>
+                <div style={{display:"flex",gap:10}}>
+                  <button className="hov" style={{...btn(),flex:1}} onClick={()=>{ setCloudSetupStep("idle"); doCloudSetup(); }}>🔄 Try Again</button>
+                  <button className="hov" style={{...btn("g"),flex:1,fontSize:12}} onClick={()=>{setModalCloudSetup(false);setCloudSetupStep("idle");}}>Cancel</button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1765,72 +1790,14 @@ function App() {
     if (loader) { loader.style.opacity = "0"; setTimeout(() => loader.remove(), 450); }
   </script>
 
-  <!-- PWA service worker — self-contained inline, no external sw.js needed -->
+  <!-- PWA service worker registration -->
   <script>
     if ("serviceWorker" in navigator) {
-      // Build an inline service worker that caches the app shell and auto-updates
-      const CACHE_NAME = "smfa-cache-v2";
-      const swCode = `
-        const CACHE = "${CACHE_NAME}";
-        // Install: cache this page
-        self.addEventListener('install', e => {
-          self.skipWaiting();
-          e.waitUntil(
-            caches.open(CACHE).then(c => c.addAll([self.registration.scope]))
-          );
-        });
-        // Activate: clean old caches
-        self.addEventListener('activate', e => {
-          e.waitUntil(
-            caches.keys().then(keys =>
-              Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
-            ).then(() => self.clients.claim())
-          );
-        });
-        // Fetch: network-first, fall back to cache for offline
-        self.addEventListener('fetch', e => {
-          if (e.request.method !== 'GET') return;
-          e.respondWith(
-            fetch(e.request)
-              .then(resp => {
-                // Cache the fresh copy
-                const clone = resp.clone();
-                caches.open(CACHE).then(c => c.put(e.request, clone));
-                return resp;
-              })
-              .catch(() => caches.match(e.request))
-          );
-        });
-        // Message: force refresh from network
-        self.addEventListener('message', e => {
-          if (e.data === 'SKIP_WAITING') self.skipWaiting();
-        });
-      `;
-      const blob = new Blob([swCode], { type: "application/javascript" });
-      const swUrl = URL.createObjectURL(blob);
-
-      navigator.serviceWorker.register(swUrl).then(reg => {
-        // Check for updates on load and periodically
-        reg.update();
-        setInterval(() => reg.update(), 60000);
-
-        reg.addEventListener('updatefound', () => {
-          const nw = reg.installing;
-          if (!nw) return;
-          nw.addEventListener('statechange', () => {
-            if (nw.state === 'installed' && navigator.serviceWorker.controller) {
-              // New content available — auto-activate
-              nw.postMessage('SKIP_WAITING');
-            }
-          });
-        });
-
-        // When SW takes control, reload to get fresh cache
-        let refreshing = false;
-        navigator.serviceWorker.addEventListener('controllerchange', () => {
-          if (!refreshing) { refreshing = true; window.location.reload(); }
-        });
-      }).catch(e => console.warn("SW register error:", e));
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js")
+          .then(r => console.log("SW registered:", r.scope))
+          .catch(e => console.log("SW error:", e));
+      });
     }
 
     // Install prompt (Android/Chrome)
